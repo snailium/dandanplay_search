@@ -1,6 +1,8 @@
+
 <IfModule mod_rewrite.c>
 RewriteEngine On
 RewriteBase /
-RewriteRule /subgroup /static.php?target=subgroup [L]
-RewriteRule /type     /static.php?target=type     [L]
+RewriteRule ^subgroup$ /static.php?target=subgroup
+RewriteRule ^type$     /static.php?target=type
 </IfModule>
+
