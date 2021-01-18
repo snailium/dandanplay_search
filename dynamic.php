@@ -1,95 +1,132 @@
-<?php
+<?php declare(strict_types=1); // strict requirement
 
-$dmhy_url = 'https://share.dmhy.org/topics/list?keyword=%s&sort_id=%d&team_id=%d&order=date-desc';
+// To bypass Cloudflare's browser check, use RSS instead.
+// But, RSS doesn't have all required information, so we
+// have to get the missing information from resource page.
+//$dmhy_url = 'https://share.dmhy.org/topics/list?keyword=%s&sort_id=%d&team_id=%d&order=date-desc';
+$dmhy_url = 'https://share.dmhy.org/topics/rss/rss.xml?keyword=%s&sort_id=%d&team_id=%d';
 
-function get_var_value($var, $default) {
-  if(!isset($var) || empty($var))
-    return $default;
-  else
-    return $var;
+class ResourceInfo {
+  public $title         = "";
+  public $type_id       = 0;
+  public $type_name     = "Unknown";
+  public $subgroup_id   = 0;
+  public $subgroup_name = "Unknown";
+  public $magnet        = "";
+  public $url           = "";
+  public $size          = "";
+  public $date          = "";
+}
+
+function get_page(string $url) {
+  // Get web page using cURL
+  $ch = curl_init();
+  curl_setopt($ch, CURLOPT_URL, $url);
+  curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+  curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+  curl_setopt($ch, CURLOPT_HEADER, false);
+  $raw_data = curl_exec($ch);
+
+  // Handle cURL exceptions
+  if(curl_errno($ch)){
+    http_response_code(500);
+  }
+  $statusCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+  if($statusCode != 200){
+    http_response_code(500);
+  }
+
+  // Done cURL
+  curl_close($ch);
+
+  return $raw_data;
+}
+
+function get_resource_detail(ResourceInfo &$resource) {
+  $page_data = get_page($resource->url);
+
+  // Parse web page
+  $dom = new DOMDocument();
+  @$dom->loadHTML($page_data);
+
+  // Get subgroup information
+  $dom_path = new DOMXpath($dom);
+  $sidebar = $dom_path->query("//div[@class='user-sidebar']")->item(0);
+
+  foreach($sidebar->getElementsByTagName('a') as $link) {
+    $link_url  = $link->getAttribute('href');
+    $link_text = $link->textContent;
+    $link_url_segments = explode('/', $link_url);
+    if(count($link_url_segments) == 5 && $link_url_segments[1] == "topics" && $link_url_segments[2] == "list" && $link_url_segments[3] == "team_id") {
+      $resource->subgroup_id   = intval($link_url_segments[4]);
+      $resource->subgroup_name = $link_text;
+    }
+  }
+
+  // Get size information
+  $main_section   = $dom_path->query("//div[@class='topic-main']")->item(0);
+  $info_section   = $main_section->getElementsByTagName('ul')->item(0);
+  $info_content   = $info_section->getElementsByTagName('li');
+  $size_index     = count($info_content) - 3;
+  $size_content   = $info_content[$size_index];
+  $resource->size = $size_content->getElementsByTagName('span')->item(0)->textContent;
 }
 
 $keyword  = (!isset($_GET['keyword'])  || empty($_GET['keyword']))  ? "" : $_GET['keyword'];
 $subgroup = (!isset($_GET['subgroup']) || empty($_GET['subgroup'])) ? 0  : $_GET['subgroup'];
 $type     = (!isset($_GET['type'])     || empty($_GET['type']))     ? 0  : $_GET['type'];
 
-// Get web page using cURL
-$ch = curl_init();
-curl_setopt($ch, CURLOPT_URL, sprintf($dmhy_url, $keyword, $type, $subgroup));
-curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_HEADER, false);
-$raw_data = curl_exec($ch);
-
-// Handle cURL exceptions
-if(curl_errno($ch)){
-  http_response_code(500);
-}
-$statusCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-if($statusCode != 200){
-  http_response_code(500);
-}
-
-// Done cURL
-curl_close($ch);
+$page_data = get_page(sprintf($dmhy_url, $keyword, $type, $subgroup));
 
 // Parse web page
 $dom = new DOMDocument();
-@$dom->loadHTML($raw_data);
-$list_table = $dom->getElementById('topic_list');
-$list_content = $list_table->getElementsByTagName('tbody');
-$list_items = $list_content[0]->getElementsByTagName('tr');
+@$dom->loadXML($page_data);
+$items = $dom->getElementsByTagName('item');
+
+$has_more = "false";
+$item_count = count($items);
+if($item_count > 20) {
+  $item_count = 20;
+  $has_more = "true";
+}
 
 ?>
 
 {
-    "HasMore": true,
+    "HasMore": <?php echo $has_more; ?>,
     "Resources": [
 <?php
-foreach($list_items as $item) {
-  $item_attr = $item->getElementsByTagName('td');
-  // [0]: date/time
-  $item_date_container = $item_attr[0]->getElementsByTagName('span')->item(0);
-  $item_date           = trim($item_date_container->textContent);
-  // [1]: type
-  $item_type_container      = $item_attr[1]->getElementsByTagName('a')->item(0);
-  $item_type_text_container = $item_type_container->getElementsByTagName('font')->item(0);
-  $item_type_url            = $item_type_container->getAttribute('href');
-  $item_type_id             = trim(substr($item_type_url, 21));
-  $item_type_name           = trim($item_type_text_container->textContent);
-  // [2]: subgroup + title
-  $item_path = new DOMXpath($item_attr[2]);
-  $item_subgroup = $xpath->query("//span[@class='tag']");
-  if(!$item_subgroup) {
-    $item_subgroup_id   = 0;
-    $item_subgroup_name = Unknown;
-  } else {
-    $item_subgroup_container = $item_subgroup[0]->getElementsByTagName('a')->item(0);
-    $item_subgroup_url       = $item_subgroup_container->getAttribute('href');
-    $item_subgroup_id        = trim(substr($item_subgroup_url, 21));;
-    $item_subgroup_name      = trim($item_subgroup_container->textContent);
-  }
-  $item_info     = $item_attr[2]->getElementsByTagName('a')->item(0);
-  $item_title    = trim($item_info->textContent);
-  $item_page_url = 'https://share.dmhy.org' . trim($item_info->getAttribute('href'));
-  //[3]: Magnet
-  $item_magnet_container = $item_attr[3]->getElementsByTagName('a')->item(0);
-  $item_magnet           = trim($item_magnet_container->getAttribute('href'));
-  //[4]: File size
-  $item_file_size = trim($item_attr[4]->textContent);
+
+for ($i=0; $i<$item_count; $i++) {
+  $item = $items[$i];
+
+  $resource = new ResourceInfo();
+  $resource->title     = $item->getElementsByTagName('title')->item(0)->nodeValue;
+  $resource->url       = $item->getElementsByTagName('link')->item(0)->nodeValue;
+  $resource->date      = $item->getElementsByTagName('pubDate')->item(0)->nodeValue;
+  $resource->magnet    = $item->getElementsByTagName('enclosure')->item(0)->getAttribute('url');
+  $category            = $item->getElementsByTagName('category')->item(0);
+  $category_url        = $category->getAttribute('domain');
+  $category_id_start   = strrpos($category_url, '/') + 1;
+  $category_id         = substr($category_url, $category_id_start);
+  $resource->type_id   = intval($category_id);
+  $resource->type_name = $category->nodeValue;
+
+  get_resource_detail($resource);
+
 
 ?>
 
         {
-            "Title": <?php echo "$item_title"; ?>,
-            "TypeId": <?php echo $item_type_id; ?>,
-            "TypeName":  <?php echo "$item_type_name"; ?>,
-            "SubgroupId": <?php echo $item_subgroup_id; ?>,
-            "SubgroupName": <?php echo "$item_subgroup_name"; ?>,
-            "Magnet": <?php echo "$item_magnet"; ?>,
-            "PageUrl": <?php echo "$item_page_url"; ?>,
-            "FileSize": <?php echo "$item_file_size"; ?>,
-            "PublishDate": <?php echo "$item_date"; ?>
+            "Title": "<?php echo $resource->title; ?>",
+            "TypeId": <?php echo $resource->type_id; ?>,
+            "TypeName":  "<?php echo $resource->type_name; ?>",
+            "SubgroupId": <?php echo $resource->subgroup_id; ?>,
+            "SubgroupName": "<?php echo $resource->subgroup_name; ?>",
+            "Magnet": "<?php echo $resource->magnet; ?>",
+            "PageUrl": "<?php echo $resource->url; ?>",
+            "FileSize": "<?php echo $resource->size; ?>",
+            "PublishDate": "<?php echo $resource->date; ?>"
         },
 
 <?php
